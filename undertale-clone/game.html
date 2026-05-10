@@ -218,10 +218,23 @@ class OverworldScene {
   constructor(scenes,input,audio,name,save=null){this.scenes=scenes;this.input=input;this.audio=audio;this.playerName=name;}
   onEnter(){}  onExit(){}  update(){}
   render(ctx){
+    // Yellow star
+    ctx.fillStyle='#ffff00';
+    ctx.beginPath();
+    for(let i=0;i<5;i++){
+      const a=Math.PI/2+i*Math.PI*2/5, b=a+Math.PI/5;
+      if(i===0){ctx.moveTo(320+18*Math.cos(a),180+18*Math.sin(a));}
+      else{ctx.lineTo(320+18*Math.cos(a),180+18*Math.sin(a));}
+      ctx.lineTo(320+8*Math.cos(b),180+8*Math.sin(b));
+    }
+    ctx.closePath(); ctx.fill();
     ctx.fillStyle='#fff'; ctx.font='10px "Press Start 2P",monospace'; ctx.textAlign='center';
-    ctx.fillText(`안녕하세요, ${this.playerName}!`,320,220);
-    ctx.fillStyle='#666'; ctx.font='7px "Press Start 2P",monospace';
-    ctx.fillText('(Phase 3에서 오버월드 구현 예정)',320,260);
+    ctx.fillText('HELLO, ' + (this.playerName||'FRISK') + '!', 320, 230);
+    ctx.fillStyle='#aaa'; ctx.font='7px "Press Start 2P",monospace';
+    ctx.fillText('* Your DETERMINATION fills', 320, 265);
+    ctx.fillText('  this place with light.', 320, 283);
+    ctx.fillStyle='#555'; ctx.font='6px "Press Start 2P",monospace';
+    ctx.fillText('(Overworld coming in Phase 3)', 320, 320);
     ctx.textAlign='left';
   }
 }
@@ -241,9 +254,14 @@ class TitleScene {
   onExit(){ window.removeEventListener('keydown',this._onKeyDown); }
   _handleNameKey(e){
     if (this._phase!=='name_input') return;
-    if (e.key==='Backspace') this._nameInput=this._nameInput.slice(0,-1);
-    else if (e.key==='Enter') this._confirmName();
-    else if (e.key.length===1 && this._nameInput.length<8) this._nameInput+=e.key.toUpperCase();
+    e.stopImmediatePropagation();
+    if (e.key==='Backspace') { this._nameInput=this._nameInput.slice(0,-1); }
+    else if (e.key==='Enter' || e.code==='Enter') { this._confirmName(); }
+    else if (e.key.length===1 && this._nameInput.length<8) {
+      if (e.key.charCodeAt(0)>=32 && e.key.charCodeAt(0)<127) {
+        this._nameInput+=e.key.toUpperCase();
+      }
+    }
   }
   _confirmName(){
     const name=this._nameInput.trim()||'FRISK';
@@ -294,15 +312,15 @@ class TitleScene {
   }
   _renderNameInput(ctx,W,H){
     ctx.fillStyle='#fff'; ctx.font='10px "Press Start 2P",monospace'; ctx.textAlign='center';
-    ctx.fillText('이름을 입력하세요',W/2,260);
+    ctx.fillText('ENTER YOUR NAME',W/2,260);
     const bw=200,bh=40,bx=W/2-100,by=290;
     ctx.fillStyle='#000'; ctx.fillRect(bx,by,bw,bh);
     ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.strokeRect(bx,by,bw,bh);
     ctx.fillStyle='#fff'; ctx.font='12px "Press Start 2P",monospace';
     ctx.fillText(this._nameInput+(this._blinkOn?'_':' '),W/2,by+26);
     ctx.fillStyle='#666'; ctx.font='7px "Press Start 2P",monospace';
-    ctx.fillText('ENTER로 확인',W/2,by+70);
-    ctx.fillText('(최대 8자)',W/2,by+86);
+    ctx.fillText('PRESS ENTER TO CONFIRM',W/2,by+70);
+    ctx.fillText('(MAX 8 CHARS)',W/2,by+86);
   }
 }
 

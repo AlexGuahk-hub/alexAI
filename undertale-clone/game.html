@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UNDERTALE Fan Clone</title>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    #game-canvas {
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+  </style>
+</head>
+<body>
+<canvas id="game-canvas" width="640" height="480"></canvas>
+<script>
+// ===== GameLoop =====
+class GameLoop {
+  constructor(updateFn, renderFn) {
+    this.update = updateFn;
+    this.render = renderFn;
+    this.running = false;
+    this.rafId = null;
+    this.FIXED_TIMESTEP = 1000 / 60;
+    this.MAX_ACCUMULATED = this.FIXED_TIMESTEP * 5;
+    this.accumulated = 0;
+    this.lastTime = 0;
+  }
+  start() {
+    this.running = true;
+    this.lastTime = performance.now();
+    this.rafId = requestAnimationFrame(this._tick.bind(this));
+  }
+  stop() {
+    this.running = false;
+    if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null; }
+  }
+  _tick(now) {
+    if (!this.running) return;
+    const elapsed = now - this.lastTime;
+    this.lastTime = now;
+    this.accumulated += Math.min(elapsed, this.MAX_ACCUMULATED);
+    while (this.accumulated >= this.FIXED_TIMESTEP) {
+      this.update(this.FIXED_TIMESTEP / 1000);
+      this.accumulated -= this.FIXED_TIMESTEP;
+    }
+    this.render();
+    this.rafId = requestAnimationFrame(this._tick.bind(this));
+  }
+}
+
+// ===== SceneManager =====
+class SceneManager {
+  constructor() { this.stack = []; }
+  get current() { return this.stack[this.stack.length - 1] ?? null; }
+  push(scene) { this.current?.onPause?.(); this.stack.push(scene); scene.onEnter?.(); }
+  pop() { const s = this.stack.pop(); s?.onExit?.(); this.current?.onResume?.(); return s; }
+  replace(scene) { const old = this.stack.pop(); old?.onExit?.(); this.stack.push(scene); scene.onEnter?.(); }
+  clear() { while (this.stack.length > 0) this.stack.pop()?.onExit?.(); }
+  update(dt) { this.current?.update?.(dt); }
+  render(ctx) { for (const scene of this.stack) scene.render?.(ctx); }
+}
+
+// ===== InputManager =====
+const KEY_MAP = {
+  ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right',
+  KeyZ:'confirm', KeyX:'cancel', Enter:'confirm', Escape:'cancel',
+  ShiftLeft:'shift', ShiftRight:'shift',
+};
+class InputManager {
+  constructor() {
+    this._held = new Set(); this._pressed = new Set(); this._released = new Set();
+    this._onKeyDown = this._onKeyDown.bind(this);
+    this._onKeyUp   = this._onKeyUp.bind(this);
+    window.addEventListener('keydown', this._onKeyDown);
+    window.addEventListener('keyup',   this._onKeyUp);
+  }
+  _onKeyDown(e) {
+    const a = KEY_MAP[e.code]; if (!a) return; e.preventDefault();
+    if (!this._held.has(a)) this._pressed.add(a);
+    this._held.add(a);
+  }
+  _onKeyUp(e) {
+    const a = KEY_MAP[e.code]; if (!a) return;
+    this._held.delete(a); this._released.add(a);
+  }
+  isHeld(a)     { return this._held.has(a); }
+  isPressed(a)  { return this._pressed.has(a); }
+  isReleased(a) { return this._released.has(a); }
+  flush() { this._pressed.clear(); this._released.clear(); }
+}
+
+// ===== AudioManager =====
+class AudioManager {
+  constructor() { this._ctx = null; this._masterGain = null; this._sfxGain = null; }
+  _init() {
+    if (this._ctx) return;
+    this._ctx = new (window.AudioContext || window.webkitAudioContext)();
+    this._masterGain = this._ctx.createGain(); this._masterGain.gain.value = 0.5;
+    this._masterGain.connect(this._ctx.destination);
+    this._sfxGain = this._ctx.createGain(); this._sfxGain.gain.value = 0.6;
+    this._sfxGain.connect(this._masterGain);
+  }
+  resume() { this._init(); if (this._ctx.state === 'suspended') this._ctx.resume(); }
+  _beep(type, freq, dur, vol=0.12) {
+    this._init();
+    const ctx = this._ctx, osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.type = type; osc.frequency.value = freq;
+    g.gain.setValueAtTime(vol, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    osc.connect(g); g.connect(this._sfxGain);
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + dur);
+  }
+  playSfxTyping()  { this._beep('sine', 200 + Math.random()*300, 0.06, 0.15); }
+  playSfxSelect()  { this._beep('square', 440, 0.08, 0.1); }
+  playSfxConfirm() {
+    [523,659,784].forEach((f,i) => {
+      this._init();
+      const ctx=this._ctx, osc=ctx.createOscillator(), g=ctx.createGain(), t=ctx.currentTime+i*0.08;
+      osc.type='square'; osc.frequency.value=f;
+      g.gain.setValueAtTime(0.12,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.1);
+      osc.connect(g); g.connect(this._sfxGain); osc.start(t); osc.stop(t+0.1);
+    });
+  }
+  playSfxHit() {
+    this._init();
+    const ctx=this._ctx, buf=ctx.createBuffer(1,ctx.sampleRate*0.12,ctx.sampleRate);
+    const d=buf.getChannelData(0);
+    for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*(1-i/d.length);
+    const src=ctx.createBufferSource(), g=ctx.createGain();
+    src.buffer=buf; g.gain.value=0.3; src.connect(g); g.connect(this._sfxGain); src.start();
+  }
+  playSfxSave() {
+    [261,330,392,523,659].forEach((f,i) => {
+      this._init();
+      const ctx=this._ctx, osc=ctx.createOscillator(), g=ctx.createGain(), t=ctx.currentTime+i*0.1;
+      osc.type='sine'; osc.frequency.value=f;
+      g.gain.setValueAtTime(0.15,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.15);
+      osc.connect(g); g.connect(this._sfxGain); osc.start(t); osc.stop(t+0.15);
+    });
+  }
+}
+
+// ===== DialogueBox =====
+class DialogueBox {
+  constructor(canvas, audio) {
+    this.canvas=canvas; this.audio=audio; this.visible=false;
+    this._lines=[]; this._pageIndex=0; this._charIndex=0; this._timer=0;
+    this._onComplete=null; this._speaker=''; this._done=false;
+    this._blinkTimer=0; this._blinkOn=true;
+  }
+  show(lines, onComplete, speaker='') {
+    this._lines=lines; this._pageIndex=0; this._charIndex=0; this._timer=0;
+    this._onComplete=onComplete; this._speaker=speaker; this._done=false; this.visible=true;
+  }
+  hide() { this.visible=false; }
+  advance() {
+    if (!this.visible) return;
+    if (!this._done) { this._charIndex=this._lines[this._pageIndex].length; this._done=true; return; }
+    this._pageIndex++;
+    if (this._pageIndex >= this._lines.length) { this.visible=false; this._onComplete?.(); return; }
+    this._charIndex=0; this._timer=0; this._done=false;
+  }
+  update(dt) {
+    if (!this.visible || this._done) {
+      this._blinkTimer+=dt;
+      if (this._blinkTimer>=0.4) { this._blinkTimer=0; this._blinkOn=!this._blinkOn; }
+      return;
+    }
+    this._timer+=dt;
+    while (this._timer>=0.04 && this._charIndex<this._lines[this._pageIndex].length) {
+      this._timer-=0.04; this._charIndex++;
+      if (this._charIndex%2===0) this.audio.playSfxTyping();
+    }
+    if (this._charIndex>=this._lines[this._pageIndex].length) this._done=true;
+  }
+  render(ctx) {
+    if (!this.visible) return;
+    const W=this.canvas.width, H=this.canvas.height;
+    const PAD=16, BH=120, bx=PAD, by=H-BH-20, bw=W-PAD*2;
+    ctx.fillStyle='#000'; ctx.fillRect(bx,by,bw,BH);
+    ctx.strokeStyle='#fff'; ctx.lineWidth=3; ctx.strokeRect(bx,by,bw,BH);
+    if (this._speaker) {
+      ctx.fillStyle='#fff'; ctx.font='8px "Press Start 2P",monospace';
+      ctx.fillText(this._speaker, bx+PAD, by-10);
+    }
+    const text=this._lines[this._pageIndex].substring(0,this._charIndex);
+    ctx.font='8px "Press Start 2P",monospace'; ctx.fillStyle='#fff';
+    this._wrap(ctx,text,bw-PAD*2).forEach((l,i)=>ctx.fillText(l,bx+PAD,by+PAD+12+i*22));
+    if (this._done && this._blinkOn) {
+      ctx.fillStyle='#fff'; ctx.font='8px "Press Start 2P",monospace';
+      ctx.fillText('▼', bx+bw-PAD-12, by+BH-10);
+    }
+  }
+  _wrap(ctx,text,maxW) {
+    const words=text.split(' '), lines=[]; let cur='';
+    for (const w of words) {
+      const t=cur?cur+' '+w:w;
+      if (ctx.measureText(t).width>maxW && cur) { lines.push(cur); cur=w; } else cur=t;
+    }
+    if (cur) lines.push(cur); return lines;
+  }
+}
+
+// ===== OverworldScene (placeholder) =====
+class OverworldScene {
+  constructor(scenes,input,audio,name,save=null){this.scenes=scenes;this.input=input;this.audio=audio;this.playerName=name;}
+  onEnter(){}  onExit(){}  update(){}
+  render(ctx){
+    ctx.fillStyle='#fff'; ctx.font='10px "Press Start 2P",monospace'; ctx.textAlign='center';
+    ctx.fillText(`안녕하세요, ${this.playerName}!`,320,220);
+    ctx.fillStyle='#666'; ctx.font='7px "Press Start 2P",monospace';
+    ctx.fillText('(Phase 3에서 오버월드 구현 예정)',320,260);
+    ctx.textAlign='left';
+  }
+}
+
+// ===== TitleScene =====
+class TitleScene {
+  constructor(scenes,input,audio){
+    this.scenes=scenes; this.input=input; this.audio=audio;
+    this._cursor=0; this._blinkTimer=0; this._blinkOn=true;
+    this._phase='title'; this._nameInput='';
+    this._onKeyDown=this._handleNameKey.bind(this);
+  }
+  onEnter(){
+    const save=localStorage.getItem('undertale_save');
+    if (!save) this._cursor=1;
+  }
+  onExit(){ window.removeEventListener('keydown',this._onKeyDown); }
+  _handleNameKey(e){
+    if (this._phase!=='name_input') return;
+    if (e.key==='Backspace') this._nameInput=this._nameInput.slice(0,-1);
+    else if (e.key==='Enter') this._confirmName();
+    else if (e.key.length===1 && this._nameInput.length<8) this._nameInput+=e.key.toUpperCase();
+  }
+  _confirmName(){
+    const name=this._nameInput.trim()||'FRISK';
+    window.removeEventListener('keydown',this._onKeyDown);
+    this.scenes.replace(new OverworldScene(this.scenes,this.input,this.audio,name));
+  }
+  update(dt){
+    this._blinkTimer+=dt;
+    if (this._blinkTimer>=0.5){this._blinkTimer=0;this._blinkOn=!this._blinkOn;}
+    if (this._phase==='title') this._updateTitle();
+  }
+  _updateTitle(){
+    if (this.input.isPressed('up')){this._cursor=(this._cursor-1+2)%2;this.audio.playSfxSelect();}
+    if (this.input.isPressed('down')){this._cursor=(this._cursor+1)%2;this.audio.playSfxSelect();}
+    if (this.input.isPressed('confirm')){
+      this.audio.playSfxConfirm();
+      if (this._cursor===0){
+        const save=localStorage.getItem('undertale_save');
+        if (save){const d=JSON.parse(save);this.scenes.replace(new OverworldScene(this.scenes,this.input,this.audio,d.name,d));}
+      } else {
+        this._phase='name_input'; this._nameInput='';
+        window.addEventListener('keydown',this._onKeyDown);
+      }
+    }
+  }
+  render(ctx){
+    const W=640,H=480;
+    ctx.fillStyle='#111';
+    for(let i=0;i<5;i++) ctx.fillRect(30+i*120,H-60,8,8);
+    ctx.fillStyle='#fff'; ctx.font='28px "Press Start 2P",monospace'; ctx.textAlign='center';
+    ctx.fillText('UNDERTALE',W/2,160);
+    ctx.font='8px "Press Start 2P",monospace'; ctx.fillStyle='#aaa';
+    ctx.fillText('- Fan Recreation -',W/2,190);
+    if (this._phase==='title') this._renderMenu(ctx,W,H);
+    else this._renderNameInput(ctx,W,H);
+    ctx.textAlign='left';
+  }
+  _renderMenu(ctx,W,H){
+    ctx.textAlign='center';
+    ['CONTINUE','NEW GAME'].forEach((item,i)=>{
+      const y=280+i*40, active=i===this._cursor;
+      ctx.fillStyle=active?'#fff':'#666'; ctx.font='10px "Press Start 2P",monospace';
+      ctx.fillText(item,W/2,y);
+      if (active&&this._blinkOn){ctx.fillStyle='#fff';ctx.fillText('*',W/2-100,y);}
+    });
+    ctx.fillStyle='#444'; ctx.font='7px "Press Start 2P",monospace';
+    ctx.fillText('Z / ENTER to select',W/2,H-40);
+  }
+  _renderNameInput(ctx,W,H){
+    ctx.fillStyle='#fff'; ctx.font='10px "Press Start 2P",monospace'; ctx.textAlign='center';
+    ctx.fillText('이름을 입력하세요',W/2,260);
+    const bw=200,bh=40,bx=W/2-100,by=290;
+    ctx.fillStyle='#000'; ctx.fillRect(bx,by,bw,bh);
+    ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.strokeRect(bx,by,bw,bh);
+    ctx.fillStyle='#fff'; ctx.font='12px "Press Start 2P",monospace';
+    ctx.fillText(this._nameInput+(this._blinkOn?'_':' '),W/2,by+26);
+    ctx.fillStyle='#666'; ctx.font='7px "Press Start 2P",monospace';
+    ctx.fillText('ENTER로 확인',W/2,by+70);
+    ctx.fillText('(최대 8자)',W/2,by+86);
+  }
+}
+
+// ===== BOOT =====
+const canvas = document.getElementById('game-canvas');
+const ctx    = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+const input  = new InputManager();
+const audio  = new AudioManager();
+const scenes = new SceneManager();
+
+window.addEventListener('keydown', ()=>audio.resume(), {once:true});
+scenes.push(new TitleScene(scenes, input, audio));
+
+const loop = new GameLoop(
+  dt => { scenes.update(dt); input.flush(); },
+  ()  => { ctx.fillStyle='#000'; ctx.fillRect(0,0,640,480); scenes.render(ctx); }
+);
+loop.start();
+</script>
+</body>
+</html>
